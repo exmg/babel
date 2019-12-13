@@ -43,11 +43,51 @@ export function runAsync(
   return callback(null, result);
 }
 
+const crypto = require("crypto");
+const fs = require("fs");
+const cacheDir = "node_modules/.cache/babel";
+fs.mkdirSync(cacheDir, { recursive: true });
+
 export function runSync(
   config: ResolvedConfig,
   code: string,
   ast: ?(BabelNodeFile | BabelNodeProgram),
 ): FileResult {
+  const filename = config.options.filename;
+  const started = Date.now();
+  const optsJSON = JSON.stringify(opts);
+  const cacheKey = crypto
+    .createHash("md5")
+    .update(JSON.stringify(config))
+    .update(code)
+    .digest("hex");
+  let cached;
+
+  try {
+    cached = {
+      code: fs.readFileSync(`${cacheDir}/${cacheKey}.js`, "utf8"),
+      map: JSON.parse(fs.readFileSync(`${cacheDir}/${cacheKey}.map`, "utf8")),
+    };
+  } catch (e) {
+    cached = null;
+  }
+
+  if (cached) {
+    console.log(
+      `${filename} ${(cached.code.length / 1000).toFixed(
+        1,
+      )}kb restored in ${Date.now() - started}ms`,
+    );
+    return {
+      metadata: {},
+      options: opts,
+      ast: null,
+      code: cached.code,
+      map: cached.map,
+      sourceType: "module",
+    };
+  }
+
   const file = normalizeFile(
     config.passes,
     normalizeOptions(config),
@@ -79,7 +119,7 @@ export function runSync(
     throw e;
   }
 
-  return {
+  const result = {
     metadata: file.metadata,
     options: opts,
     ast: opts.ast === true ? file.ast : null,
@@ -87,6 +127,24 @@ export function runSync(
     map: outputMap === undefined ? null : outputMap,
     sourceType: file.ast.program.sourceType,
   };
+  if (JSON.stringify(opts) !== optsJSON) {
+    console.log(`PP: ${filename} NOT CACHED: opts changed`);
+  } else if (JSON.stringify(result.metadata) !== "{}") {
+    console.log(`PP: ${filename} NOT CACHED: metadata !== {}`);
+  } else if (result.ast !== null) {
+    console.log(`PP: ${filename} NOT CACHED: ast !== null`);
+  } else if (result.sourceType !== "module") {
+    console.log(`PP: ${filename} NOT CACHED: sourceType !== module`);
+  } else {
+    fs.writeFileSync(`${cacheDir}/${cacheKey}.js`, result.code);
+    fs.writeFileSync(`${cacheDir}/${cacheKey}.map`, JSON.stringify(result.map));
+    console.log(
+      `${filename} ${(result.code.length / 1000).toFixed(
+        1,
+      )}kb cached to disk in ${Date.now() - started}ms`,
+    );
+  }
+  return result;
 }
 
 function transformFile(file: File, pluginPasses: PluginPasses): void {
